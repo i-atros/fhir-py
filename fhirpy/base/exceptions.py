@@ -1,3 +1,6 @@
+import json
+
+
 class BaseFHIRError(Exception):
     pass
 
@@ -15,7 +18,9 @@ class AuthorizationError(BaseFHIRError):
 
 
 class OperationOutcome(BaseFHIRError):
-    pass
+    def __init__(self, *args, **kwargs):
+        error = json.loads(args[0])["issue"]
+        super().__init__(error, kwargs)
 
 
 class MultipleResourcesFound(BaseFHIRError):
