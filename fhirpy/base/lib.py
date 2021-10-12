@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 
 import aiohttp
 import requests
+import urllib
 
 from yarl import URL
 from fhirpy.base.searchset import AbstractSearchSet
@@ -106,7 +107,7 @@ class AsyncClient(AbstractClient, ABC):
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         async with aiohttp.request(
-            method, url, json=data, headers=headers
+                method, url, json=data, headers=headers
         ) as r:
             if 200 <= r.status < 300:
                 data = await r.text()
@@ -303,7 +304,7 @@ class SyncResource(BaseResource, ABC):
                 raise TypeError('Resource `id` is required for update operation')
             request_data = []
             for key in fields:
-                operator = 'add'  #TODO add logic to support other operators
+                operator = 'add'  # TODO add logic to support other operators
                 request_data.append(
                     {
                         'op': operator,
@@ -343,7 +344,7 @@ class SyncResource(BaseResource, ABC):
             data=self.serialize()
         )
         if any(
-            issue['severity'] in ['fatal', 'error'] for issue in data['issue']
+                issue['severity'] in ['fatal', 'error'] for issue in data['issue']
         ):
             if raise_exception:
                 raise OperationOutcome(data)
@@ -401,7 +402,7 @@ class AsyncResource(BaseResource, ABC):
             data=self.serialize()
         )
         if any(
-            issue['severity'] in ['fatal', 'error'] for issue in data['issue']
+                issue['severity'] in ['fatal', 'error'] for issue in data['issue']
         ):
             if raise_exception:
                 raise OperationOutcome(data)
@@ -423,7 +424,7 @@ class SyncReference(BaseReference, ABC):
         if not self.is_local:
             raise ResourceNotFound('Can not resolve not local resource')
         return self.client.resources(self.resource_type).search(_id=self.id
-                                                               ).get()
+                                                                ).get()
 
     def execute(self, operation, method='post', **kwargs):
         if not self.is_local:
@@ -444,7 +445,7 @@ class AsyncReference(BaseReference, ABC):
         if not self.is_local:
             raise ResourceNotFound('Can not resolve not local resource')
         return await self.client.resources(self.resource_type
-                                          ).search(_id=self.id).get()
+                                           ).search(_id=self.id).get()
 
     async def execute(self, operation, method='post', **kwargs):
         if not self.is_local:
