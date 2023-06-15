@@ -79,7 +79,7 @@ class AbstractClient(ABC):
         pass
 
     def _build_request_headers(self):
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/fhir+json"}
 
         if self.authorization:
             headers["Authorization"] = self.authorization
