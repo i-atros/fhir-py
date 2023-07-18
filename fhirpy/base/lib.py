@@ -38,7 +38,7 @@ class AbstractClient(ABC):
         self.extra_headers = extra_headers
 
     def __str__(self):  # pragma: no cover
-        return "<{0} {1}>".format(self.__class__.__name__, self.url)
+        return f"<{self.__class__.__name__} {self.url}>"
 
     def __repr__(self):  # pragma: no cover
         return self.__str__()
@@ -99,11 +99,10 @@ class AbstractClient(ABC):
                         path += f'#{parsed.fragment}'
             if self.url.rstrip("/") in path.rstrip("/"):
                 return path
-            else:
-                raise ValueError(
-                    f'Request url "{path}" does not contain base url "{self.url}"'
-                    " (possible security issue)"
-                )
+            raise ValueError(
+                f'Request url "{path}" does not contain base url "{self.url}"'
+                " (possible security issue)"
+            )
         path = path.lstrip("/")
         base_url_path = URL(self.url).path.lstrip("/") + "/"
         path = remove_prefix(path, base_url_path)
@@ -116,7 +115,7 @@ class AsyncClient(AbstractClient, ABC):
     aiohttp_config = None
 
     def __init__(
-        self, url, authorization=None, extra_headers=None, aiohttp_config=None
+            self, url, authorization=None, extra_headers=None, aiohttp_config=None
     ):
         self.aiohttp_config = aiohttp_config or {}
 
@@ -158,9 +157,11 @@ class SyncClient(AbstractClient, ABC):
     requests_config = None
 
     def __init__(
-        self, url, authorization=None, extra_headers=None, requests_config=None
+            self, url, authorization=None, extra_headers=None, requests_config=None, timeout=120
     ):
         self.requests_config = requests_config or {}
+        if 'timeout' not in self.requests_config:
+            self.requests_config['timeout'] = timeout
 
         super().__init__(url, authorization, extra_headers)
 
@@ -169,31 +170,39 @@ class SyncClient(AbstractClient, ABC):
 
     def _do_request(self, method, path, data=None, params=None):
         headers = self._build_request_headers()
+        headers['Content-Type'] = 'application/fhir+json'
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         url = self._build_request_url(path, params)
-        r = requests.request(
-            method, url, json=data, headers=headers, **self.requests_config
-        )
+        if session := self.requests_config.pop('session', None):
+            req = session.request(
+                method, url, json=data, headers=headers, **self.requests_config,
+            )
+            # now add it again for the next request
+            self.requests_config['session'] = session
+        else:
+            req = requests.request(
+                method, url, json=data, headers=headers, **self.requests_config,
+            )
 
-        if 200 <= r.status_code < 300:
+        if 200 <= req.status_code < 300:
             return (
-                json.loads(r.content.decode(), object_hook=AttrDict)
-                if r.content
+                json.loads(req.content.decode(), object_hook=AttrDict)
+                if req.content
                 else None
             )
 
-        if r.status_code == 404 or r.status_code == 410:
-            raise ResourceNotFound(r.content.decode())
+        if req.status_code == 404 or req.status_code == 410:
+            raise ResourceNotFound(req.content.decode())
 
-        data = r.content.decode()
+        data = req.content.decode()
         try:
             parsed_data = json.loads(data)
             if parsed_data["resourceType"] == "OperationOutcome":
                 raise OperationOutcome(resource=parsed_data)
             raise OperationOutcome(reason=data)
-        except (KeyError, JSONDecodeError):
-            raise OperationOutcome(reason=data)
+        except (KeyError, JSONDecodeError) as exc:
+            raise OperationOutcome(reason=data) from exc
 
     def _fetch_resource(self, path, params=None):
         return self._do_request("get", path, params=params)
@@ -216,7 +225,7 @@ class SyncSearchSet(AbstractSearchSet, ABC):
         return data
 
     def fetch_all(self):
-        return list([x for x in self])
+        return list(x for x in self)
 
     def get(self, id=None):
         searchset = self.limit(2)
@@ -232,7 +241,7 @@ class SyncSearchSet(AbstractSearchSet, ABC):
         res_data = searchset.fetch()
         if len(res_data) == 0:
             raise ResourceNotFound("No resources found")
-        elif len(res_data) > 1:
+        if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
         return self._perform_resource(resource)
@@ -289,7 +298,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
         return data
 
     async def fetch_all(self):
-        return list([x async for x in self])
+        return list(x async for x in self)
 
     async def get(self, id=None):
         searchset = self.limit(2)
@@ -305,7 +314,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
         res_data = await searchset.fetch()
         if len(res_data) == 0:
             raise ResourceNotFound("No resources found")
-        elif len(res_data) > 1:
+        if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
         return self._perform_resource(resource)
