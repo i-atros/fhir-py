@@ -174,7 +174,7 @@ class SyncClient(AbstractClient, ABC):
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         url = self._build_request_url(path, params)
-        if session := self.requests_config.get('session', None):
+        if session := self.requests_config.pop('session', None):
             req = session.request(
                 method, url, json=data, headers=headers, **self.requests_config,
             )
