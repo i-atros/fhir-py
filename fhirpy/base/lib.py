@@ -157,9 +157,11 @@ class SyncClient(AbstractClient, ABC):
     requests_config = None
 
     def __init__(
-            self, url, authorization=None, extra_headers=None, requests_config=None
+            self, url, authorization=None, extra_headers=None, requests_config=None, timeout=120
     ):
         self.requests_config = requests_config or {}
+        if 'timeout' not in self.requests_config:
+            self.requests_config['timeout'] = timeout
 
         super().__init__(url, authorization, extra_headers)
 
@@ -168,24 +170,30 @@ class SyncClient(AbstractClient, ABC):
 
     def _do_request(self, method, path, data=None, params=None):
         headers = self._build_request_headers()
+        headers['Content-Type'] = 'application/fhir+json'
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         url = self._build_request_url(path, params)
-        r = requests.request(
-            method, url, json=data, headers=headers, **self.requests_config
-        )
+        if session := self.requests_config.get('session', None):
+            req = session.request(
+                method, url, json=data, headers=headers, **self.requests_config,
+            )
+        else:
+            req = requests.request(
+                method, url, json=data, headers=headers, **self.requests_config,
+            )
 
-        if 200 <= r.status_code < 300:
+        if 200 <= req.status_code < 300:
             return (
-                json.loads(r.content.decode(), object_hook=AttrDict)
-                if r.content
+                json.loads(req.content.decode(), object_hook=AttrDict)
+                if req.content
                 else None
             )
 
-        if r.status_code == 404 or r.status_code == 410:
-            raise ResourceNotFound(r.content.decode())
+        if req.status_code == 404 or req.status_code == 410:
+            raise ResourceNotFound(req.content.decode())
 
-        data = r.content.decode()
+        data = req.content.decode()
         try:
             parsed_data = json.loads(data)
             if parsed_data["resourceType"] == "OperationOutcome":
