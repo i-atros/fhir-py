@@ -178,6 +178,8 @@ class SyncClient(AbstractClient, ABC):
             req = session.request(
                 method, url, json=data, headers=headers, **self.requests_config,
             )
+            # now add it again for the next request
+            self.requests_config['session'] = session
         else:
             req = requests.request(
                 method, url, json=data, headers=headers, **self.requests_config,
