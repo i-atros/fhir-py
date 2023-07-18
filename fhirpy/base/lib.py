@@ -38,7 +38,7 @@ class AbstractClient(ABC):
         self.extra_headers = extra_headers
 
     def __str__(self):  # pragma: no cover
-        return "<{0} {1}>".format(self.__class__.__name__, self.url)
+        return f"<{self.__class__.__name__} {self.url}>"
 
     def __repr__(self):  # pragma: no cover
         return self.__str__()
@@ -99,11 +99,10 @@ class AbstractClient(ABC):
                         path += f'#{parsed.fragment}'
             if self.url.rstrip("/") in path.rstrip("/"):
                 return path
-            else:
-                raise ValueError(
-                    f'Request url "{path}" does not contain base url "{self.url}"'
-                    " (possible security issue)"
-                )
+            raise ValueError(
+                f'Request url "{path}" does not contain base url "{self.url}"'
+                " (possible security issue)"
+            )
         path = path.lstrip("/")
         base_url_path = URL(self.url).path.lstrip("/") + "/"
         path = remove_prefix(path, base_url_path)
@@ -116,7 +115,7 @@ class AsyncClient(AbstractClient, ABC):
     aiohttp_config = None
 
     def __init__(
-        self, url, authorization=None, extra_headers=None, aiohttp_config=None
+            self, url, authorization=None, extra_headers=None, aiohttp_config=None
     ):
         self.aiohttp_config = aiohttp_config or {}
 
@@ -158,7 +157,7 @@ class SyncClient(AbstractClient, ABC):
     requests_config = None
 
     def __init__(
-        self, url, authorization=None, extra_headers=None, requests_config=None
+            self, url, authorization=None, extra_headers=None, requests_config=None
     ):
         self.requests_config = requests_config or {}
 
@@ -192,8 +191,8 @@ class SyncClient(AbstractClient, ABC):
             if parsed_data["resourceType"] == "OperationOutcome":
                 raise OperationOutcome(resource=parsed_data)
             raise OperationOutcome(reason=data)
-        except (KeyError, JSONDecodeError):
-            raise OperationOutcome(reason=data)
+        except (KeyError, JSONDecodeError) as exc:
+            raise OperationOutcome(reason=data) from exc
 
     def _fetch_resource(self, path, params=None):
         return self._do_request("get", path, params=params)
@@ -216,7 +215,7 @@ class SyncSearchSet(AbstractSearchSet, ABC):
         return data
 
     def fetch_all(self):
-        return list([x for x in self])
+        return list(x for x in self)
 
     def get(self, id=None):
         searchset = self.limit(2)
@@ -232,7 +231,7 @@ class SyncSearchSet(AbstractSearchSet, ABC):
         res_data = searchset.fetch()
         if len(res_data) == 0:
             raise ResourceNotFound("No resources found")
-        elif len(res_data) > 1:
+        if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
         return self._perform_resource(resource)
@@ -289,7 +288,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
         return data
 
     async def fetch_all(self):
-        return list([x async for x in self])
+        return list(x async for x in self)
 
     async def get(self, id=None):
         searchset = self.limit(2)
@@ -305,7 +304,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
         res_data = await searchset.fetch()
         if len(res_data) == 0:
             raise ResourceNotFound("No resources found")
-        elif len(res_data) > 1:
+        if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
         return self._perform_resource(resource)
