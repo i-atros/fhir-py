@@ -104,11 +104,15 @@ class BaseResource(AbstractResource, ABC):
         return self.__str__()
 
     @abstractmethod  # pragma: no cover
-    def save(self, fields=None):
+    def save(self, fields=None, search_params=None):
         pass
 
     @abstractmethod  # pragma: no cover
-    def update(self, **kwargs):
+    def patch(self, **kwargs):
+        pass
+
+    @abstractmethod  # pragma: no cover
+    def update(self):
         pass
 
     @abstractmethod  # pragma: no cover
@@ -130,9 +134,7 @@ class BaseResource(AbstractResource, ABC):
         Returns Reference instance for this resource
         """
         if not self.reference:
-            raise ResourceNotFound(
-                "Can not get reference to unsaved resource without id"
-            )
+            raise ResourceNotFound("Can not get reference to unsaved resource without id")
 
         return self.client.reference(reference=self.reference, **kwargs)
 
@@ -189,6 +191,9 @@ class BaseReference(AbstractResource):
         Returns Reference instance for this reference
         """
         return self.client.reference(reference=self.reference, **kwargs)
+
+    def _dict_to_resource(self, data):
+        return self.client.resource(data["resourceType"], **data)
 
     @property  # pragma: no cover
     @abstractmethod

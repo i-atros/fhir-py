@@ -71,7 +71,7 @@ class AbstractClient(ABC):
         pass
 
     @abstractmethod  # pragma: no cover
-    def _do_request(self, method, path, data=None, params=None):
+    def _do_request(self, method, path, data=None, params=None, returning_status=False):
         pass
 
     @abstractmethod  # pragma: no cover
@@ -114,9 +114,7 @@ class AbstractClient(ABC):
 class AsyncClient(AbstractClient, ABC):
     aiohttp_config = None
 
-    def __init__(
-            self, url, authorization=None, extra_headers=None, aiohttp_config=None
-    ):
+    def __init__(self, url, authorization=None, extra_headers=None, aiohttp_config=None):
         self.aiohttp_config = aiohttp_config or {}
 
         super().__init__(url, authorization, extra_headers)
@@ -124,21 +122,23 @@ class AsyncClient(AbstractClient, ABC):
     async def execute(self, path, method="post", **kwargs):
         return await self._do_request(method, path, **kwargs)
 
-    async def _do_request(self, method, path, data=None, params=None):
+    async def _do_request(self, method, path, data=None, params=None, returning_status=False):
         headers = self._build_request_headers()
         url = self._build_request_url(path, params)
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.request(
-                    method, url, json=data, **self.aiohttp_config
-            ) as r:
+            async with session.request(method, url, json=data, **self.aiohttp_config) as r:
                 if 200 <= r.status < 300:
                     data = await r.text()
-                    return json.loads(data, object_hook=AttrDict) if data else None
+                    r_data = json.loads(data, object_hook=AttrDict) if data else None
+                    return (r_data, r.status) if returning_status else r_data
 
                 if r.status == 404 or r.status == 410:
                     raise ResourceNotFound(await r.text())
+
+                if r.status == 412:
+                    raise MultipleResourcesFound(await r.text())
 
                 data = await r.text()
                 try:
@@ -168,34 +168,34 @@ class SyncClient(AbstractClient, ABC):
     def execute(self, path, method="post", **kwargs):
         return self._do_request(method, path, **kwargs)
 
-    def _do_request(self, method, path, data=None, params=None):
+    def _do_request(self, method, path, data=None, params=None, returning_status=False):
         headers = self._build_request_headers()
         headers['Content-Type'] = 'application/fhir+json'
         if method == 'patch':
             headers['Content-Type'] = 'application/json-patch+json'
         url = self._build_request_url(path, params)
         if session := self.requests_config.pop('session', None):
-            req = session.request(
+            r = session.request(
                 method, url, json=data, headers=headers, **self.requests_config,
             )
             # now add it again for the next request
             self.requests_config['session'] = session
         else:
-            req = requests.request(
+            r = requests.request(
                 method, url, json=data, headers=headers, **self.requests_config,
             )
 
-        if 200 <= req.status_code < 300:
-            return (
-                json.loads(req.content.decode(), object_hook=AttrDict)
-                if req.content
-                else None
-            )
+        if 200 <= r.status_code < 300:
+            r_data = json.loads(r.content.decode(), object_hook=AttrDict) if r.content else None
+            return (r_data, r.status_code) if returning_status else r_data
 
-        if req.status_code == 404 or req.status_code == 410:
-            raise ResourceNotFound(req.content.decode())
+        if r.status_code == 404 or r.status_code == 410:
+            raise ResourceNotFound(r.content.decode())
 
-        data = req.content.decode()
+        if r.status_code == 412:
+            raise MultipleResourcesFound(r.content.decode())
+
+        data = r.content.decode()
         try:
             parsed_data = json.loads(data)
             if parsed_data["resourceType"] == "OperationOutcome":
@@ -220,7 +220,7 @@ class SyncSearchSet(AbstractSearchSet, ABC):
 
         if data_resource_type == "Bundle":
             for item in data["entry"]:
-                item.resource = self._perform_resource(item.resource)
+                item.resource = self._dict_to_resource(item.resource)
 
         return data
 
@@ -244,33 +244,56 @@ class SyncSearchSet(AbstractSearchSet, ABC):
         if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
-        return self._perform_resource(resource)
+        return self._dict_to_resource(resource)
 
     def count(self):
         new_params = copy.deepcopy(self.params)
         new_params["_count"] = 0
         new_params["_totalMethod"] = "count"
 
-        return self.client._fetch_resource(self.resource_type, params=new_params)[
-            "total"
-        ]
+        return self.client._fetch_resource(self.resource_type, params=new_params)["total"]
 
     def first(self):
         result = self.limit(1).fetch()
 
         return result[0] if result else None
 
+    def get_or_create(self, resource):
+        assert resource.resource_type == self.resource_type
+        data, status_code = self.client._do_request(
+            "POST", self.resource_type, resource.serialize(), self.params, True
+        )
+        return data, (True if status_code == 201 else False)
+
+    def update(self, resource):
+        # TODO: Support cases where resource with id is provided
+        # accordingly to the https://build.fhir.org/http.html#cond-update
+        assert resource.resource_type == self.resource_type
+        data, status_code = self.client._do_request(
+            "PUT", self.resource_type, resource.serialize(), self.params, True
+        )
+        return data, (True if status_code == 201 else False)
+
+    def patch(self, resource):
+        # TODO: Handle cases where resource with id is provided
+        assert resource.resource_type == self.resource_type
+        # TODO: Should we omit resourceType after serialization? (not to pollute history)
+        return self.client._do_request(
+            "PATCH", self.resource_type, resource.serialize(), self.params
+        )
+
+    def delete(self):
+        return self.client._do_request(
+            "DELETE", self.resource_type, params=self.params, returning_status=True
+        )
+
     def __iter__(self):
         next_link = None
         while True:
             if next_link:
-                bundle_data = self.client._fetch_resource(
-                    *parse_pagination_url(next_link)
-                )
+                bundle_data = self.client._fetch_resource(*parse_pagination_url(next_link))
             else:
-                bundle_data = self.client._fetch_resource(
-                    self.resource_type, self.params
-                )
+                bundle_data = self.client._fetch_resource(self.resource_type, self.params)
             new_resources = self._get_bundle_resources(bundle_data)
             next_link = get_by_path(bundle_data, ["link", {"relation": "next"}, "url"])
 
@@ -293,7 +316,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
 
         if data_resource_type == "Bundle":
             for item in data["entry"]:
-                item.resource = self._perform_resource(item.resource)
+                item.resource = self._dict_to_resource(item.resource)
 
         return data
 
@@ -317,33 +340,56 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
         if len(res_data) > 1:
             raise MultipleResourcesFound("More than one resource found")
         resource = res_data[0]
-        return self._perform_resource(resource)
+        return self._dict_to_resource(resource)
 
     async def count(self):
         new_params = copy.deepcopy(self.params)
         new_params["_count"] = 0
         new_params["_totalMethod"] = "count"
 
-        return (
-            await self.client._fetch_resource(self.resource_type, params=new_params)
-        )["total"]
+        return (await self.client._fetch_resource(self.resource_type, params=new_params))["total"]
 
     async def first(self):
         result = await self.limit(1).fetch()
 
         return result[0] if result else None
 
+    async def get_or_create(self, resource):
+        assert resource.resource_type == self.resource_type
+        data, status_code = await self.client._do_request(
+            "POST", self.resource_type, resource.serialize(), self.params, True
+        )
+        return data, (True if status_code == 201 else False)
+
+    async def update(self, resource):
+        # TODO: Support cases where resource with id is provided
+        # accordingly to the https://build.fhir.org/http.html#cond-update
+        assert resource.resource_type == self.resource_type
+        data, status_code = await self.client._do_request(
+            "PUT", self.resource_type, resource.serialize(), self.params, True
+        )
+        return data, (True if status_code == 201 else False)
+
+    async def patch(self, resource):
+        # TODO: Handle cases where resource with id is provided
+        assert resource.resource_type == self.resource_type
+        # TODO: Should we omit resourceType after serialization? (not to pollute history)
+        return await self.client._do_request(
+            "PATCH", self.resource_type, resource.serialize(), self.params
+        )
+
+    async def delete(self):
+        return await self.client._do_request(
+            "DELETE", self.resource_type, params=self.params, returning_status=True
+        )
+
     async def __aiter__(self):
         next_link = None
         while True:
             if next_link:
-                bundle_data = await self.client._fetch_resource(
-                    *parse_pagination_url(next_link)
-                )
+                bundle_data = await self.client._fetch_resource(*parse_pagination_url(next_link))
             else:
-                bundle_data = await self.client._fetch_resource(
-                    self.resource_type, self.params
-                )
+                bundle_data = await self.client._fetch_resource(self.resource_type, self.params)
             new_resources = self._get_bundle_resources(bundle_data)
             next_link = get_by_path(bundle_data, ["link", {"relation": "next"}, "url"])
 
@@ -355,7 +401,7 @@ class AsyncSearchSet(AbstractSearchSet, ABC):
 
 
 class SyncResource(BaseResource, ABC):
-    def save(self, fields=None):
+    def save(self, fields=None, search_params=None):
         data = self.serialize()
         if fields:  # Use FHIRPatch if fields for partial update are defined http://hl7.org/fhir/http.html#patch
             if not self.id:
@@ -374,14 +420,25 @@ class SyncResource(BaseResource, ABC):
             method = "patch"
         else:
             method = "put" if self.id else "post"
-        response_data = self.client._do_request(method, self._get_path(), data=data)
+        response_data = self.client._do_request(
+            method, self._get_path(), data=data, params=search_params
+        )
         if response_data:
             super(BaseResource, self).clear()
             super(BaseResource, self).update(
                 **self.client.resource(self.resource_type, **response_data)
             )
 
-    def update(self, **kwargs):
+    def create(self, **kwargs):
+        self.save(search_params=kwargs)
+        return self
+
+    def update(self):
+        if not self.id:
+            raise TypeError("Resource `id` is required for update operation")
+        self.save()
+
+    def patch(self, **kwargs):
         super(BaseResource, self).update(**kwargs)
         self.save(fields=kwargs.keys())
 
@@ -413,7 +470,7 @@ class SyncResource(BaseResource, ABC):
 
 
 class AsyncResource(BaseResource, ABC):
-    async def save(self, fields=None):
+    async def save(self, fields=None, search_params=None):
         data = self.serialize()
         if fields:
             if not self.id:
@@ -424,7 +481,7 @@ class AsyncResource(BaseResource, ABC):
             method = "put" if self.id else "post"
 
         response_data = await self.client._do_request(
-            method, self._get_path(), data=data
+            method, self._get_path(), data=data, params=search_params
         )
         if response_data:
             super(BaseResource, self).clear()
@@ -432,7 +489,16 @@ class AsyncResource(BaseResource, ABC):
                 **self.client.resource(self.resource_type, **response_data)
             )
 
-    async def update(self, **kwargs):
+    async def create(self, **kwargs):
+        await self.save(search_params=kwargs)
+        return self
+
+    async def update(self):
+        if not self.id:
+            raise TypeError("Resource `id` is required for update operation")
+        await self.save()
+
+    async def patch(self, **kwargs):
         super(BaseResource, self).update(**kwargs)
         await self.save(fields=kwargs.keys())
 
@@ -471,7 +537,10 @@ class SyncReference(BaseReference, ABC):
         """
         if not self.is_local:
             raise ResourceNotFound("Can not resolve not local resource")
-        return self.client.resources(self.resource_type).search(_id=self.id).get()
+        resource_data = self.client._do_request(
+            "get", "{0}/{1}".format(self.resource_type, self.id)
+        )
+        return self._dict_to_resource(resource_data)
 
     def execute(self, operation, method="post", **kwargs):
         if not self.is_local:
@@ -491,7 +560,10 @@ class AsyncReference(BaseReference, ABC):
         """
         if not self.is_local:
             raise ResourceNotFound("Can not resolve not local resource")
-        return await self.client.resources(self.resource_type).search(_id=self.id).get()
+        resource_data = await self.client._do_request(
+            "get", "{0}/{1}".format(self.resource_type, self.id)
+        )
+        return self._dict_to_resource(resource_data)
 
     async def execute(self, operation, method="post", **kwargs):
         if not self.is_local:
