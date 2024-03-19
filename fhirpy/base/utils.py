@@ -59,10 +59,7 @@ def encode_params(params):
     """
     params = params or {}
     return urlencode(
-        {
-            k: unique_everseen(v) if isinstance(v, list) else [v]
-            for k, v in params.items()
-        },
+        {k: unique_everseen(v) if isinstance(v, list) else [v] for k, v in params.items()},
         doseq=True,
         safe=":,",
         quote_via=quote,
@@ -121,7 +118,7 @@ def convert_values(data, fn):
     if isinstance(data, list):
         return SearchList(convert_values(x, fn) for x in data)
     if isinstance(data, dict):
-        return AttrDict({key: convert_values(value, fn) for key, value in data.items()})
+        return AttrDict({key: convert_values(value, fn) for key, value in dict.items(data)})
     return data
 
 
@@ -190,9 +187,7 @@ def get_by_path(data, path, default=None):
                 else:  # pragma: no cover
                     raise TypeError(
                         "Can not lookup by {0} in list. "
-                        "Possible lookups are by int or by dict.".format(
-                            reprlib.repr(key)
-                        )
+                        "Possible lookups are by int or by dict.".format(reprlib.repr(key))
                     )
             else:
                 rv = rv[key]

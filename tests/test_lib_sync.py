@@ -43,10 +43,7 @@ class TestLibSyncCase:
         )
 
     def create_resource(self, resource_type, **kwargs):
-        p = self.client.resource(resource_type, identifier=self.identifier, **kwargs)
-        p.save()
-
-        return p
+        return self.client.resource(resource_type, identifier=self.identifier, **kwargs).create()
 
     def test_create_patient(self):
         self.create_resource("Patient", id="patient", name=[{"text": "My patient"}])
@@ -54,10 +51,158 @@ class TestLibSyncCase:
         patient = self.client.resources("Patient").search(_id="patient").get()
         assert patient["name"] == [{"text": "My patient"}]
 
-    def test_update_patient(self):
-        patient = self.create_resource(
-            "Patient", id="patient", name=[{"text": "My patient"}]
+    def test_conditional_create__create_on_no_match(self):
+        self.create_resource("Patient", id="patient")
+
+        patient = self.client.resource(
+            "Patient",
+            identifier=[{"system": "http://example.com/env", "value": "other"}, self.identifier[0]],
+            name=[{"text": "Indiana Jones"}],
         )
+        patient.create(identifier="other")
+
+        assert patient.id != "patient"
+        assert patient.get_by_path(["name", 0, "text"]) == "Indiana Jones"
+
+    def test_conditional_create__skip_on_one_match(self):
+        existing_patient = self.create_resource("Patient", id="patient")
+
+        patient = self.client.resource(
+            "Patient", identifier=self.identifier, name=[{"text": "Indiana Jones"}]
+        )
+        patient.create(identifier="fhirpy")
+
+        assert patient.id == "patient"
+        assert patient.get("name") is None
+        assert patient.get_by_path(["meta", "versionId"]) == existing_patient.get_by_path(
+            ["meta", "versionId"]
+        )
+
+    def test_conditional_create__fail_on_multiple_matches(self):
+        self.create_resource("Patient", id="patient-one")
+        self.create_resource("Patient", id="patient-two")
+
+        with pytest.raises(MultipleResourcesFound):
+            self.client.resource("Patient", identifier=self.identifier).create(identifier="fhirpy")
+
+    def test_get_or_create__create_on_no_match(self):
+        self.create_resource("Patient", id="patient")
+
+        patient_to_save = self.client.resource(
+            "Patient",
+            identifier=[{"system": "http://example.com/env", "value": "other"}, self.identifier[0]],
+            name=[{"text": "Indiana Jones"}],
+        )
+        patient, created = (
+            self.client.resources("Patient")
+            .search(identifier="other")
+            .get_or_create(patient_to_save)
+        )
+        assert patient.id != "patient"
+        assert patient.get_by_path(["name", 0, "text"]) == "Indiana Jones"
+        assert created is True
+
+    def test_get_or_create__skip_on_one_match(self):
+        existing_patient = self.create_resource("Patient", id="patient")
+
+        patient_to_save = self.client.resource("Patient", identifier=self.identifier)
+        patient, created = (
+            self.client.resources("Patient")
+            .search(identifier="fhirpy")
+            .get_or_create(patient_to_save)
+        )
+        assert patient.id == "patient"
+        assert created is False
+        assert patient.get_by_path(["meta", "versionId"]) == existing_patient.get_by_path(
+            ["meta", "versionId"]
+        )
+
+    def test_conditional_operations__fail_on_multiple_matches(self):
+        self.create_resource("Patient", id="patient-one")
+        self.create_resource("Patient", id="patient-two")
+
+        patient_to_save = self.client.resource("Patient", identifier=self.identifier)
+        with pytest.raises(MultipleResourcesFound):
+            self.client.resources("Patient").search(identifier="fhirpy").get_or_create(
+                patient_to_save
+            )
+        with pytest.raises(MultipleResourcesFound):
+            self.client.resources("Patient").search(identifier="fhirpy").update(patient_to_save)
+        with pytest.raises(MultipleResourcesFound):
+            self.client.resources("Patient").search(identifier="fhirpy").patch(patient_to_save)
+
+    def test_update_with_params__no_match(self):
+        patient = self.create_resource("Patient", id="patient", active=True)
+
+        patient_to_update = self.client.resource(
+            "Patient",
+            identifier=[{"system": "http://example.com/env", "value": "other"}, self.identifier[0]],
+            active=False,
+        )
+        new_patient, created = (
+            self.client.resources("Patient").search(identifier="other").update(patient_to_update)
+        )
+
+        patient.refresh()
+        assert patient.active is True
+        assert new_patient.id != "patient"
+        assert new_patient.active is False
+        assert created is True
+
+    def test_update_with_params__one_match(self):
+        patient = self.create_resource("Patient", id="patient", active=True)
+
+        patient_to_update = self.client.resource(
+            "Patient", identifier=self.identifier, name=[{"text": "Indiana Jones"}]
+        )
+        updated_patient, created = (
+            self.client.resources("Patient").search(identifier="fhirpy").update(patient_to_update)
+        )
+        assert updated_patient.id == patient.id
+        assert created is False
+        assert updated_patient.get_by_path(["meta", "versionId"]) != patient.get_by_path(
+            ["meta", "versionId"]
+        )
+        assert updated_patient.get_by_path(["name", 0, "text"]) == "Indiana Jones"
+
+        patient.refresh()
+        assert updated_patient.get_by_path(["meta", "versionId"]) == patient.get_by_path(
+            ["meta", "versionId"]
+        )
+        assert patient.get("active") is None
+
+    def test_patch_with_params__no_match(self):
+        patient_to_patch = self.client.resource(
+            "Patient",
+            identifier=[{"system": "http://example.com/env", "value": "other"}, self.identifier[0]],
+            active=False,
+        )
+        with pytest.raises(ResourceNotFound):
+            self.client.resources("Patient").search(identifier="other").patch(patient_to_patch)
+
+    def test_patch_with_params__one_match(self):
+        patient = self.create_resource("Patient", id="patient", active=True)
+
+        patient_to_patch = self.client.resource(
+            "Patient", identifier=self.identifier, name=[{"text": "Indiana Jones"}]
+        )
+        patched_patient = (
+            self.client.resources("Patient").search(identifier="fhirpy").patch(patient_to_patch)
+        )
+        assert patched_patient.id == patient.id
+        assert patched_patient.get_by_path(["meta", "versionId"]) != patient.get_by_path(
+            ["meta", "versionId"]
+        )
+        assert patched_patient.get_by_path(["name", 0, "text"]) == "Indiana Jones"
+
+        patient.refresh()
+        assert patched_patient.get_by_path(["meta", "versionId"]) == patient.get_by_path(
+            ["meta", "versionId"]
+        )
+        assert patient.active is True
+
+    def test_update_patient(self):
+        patient = self.create_resource("Patient", id="patient", name=[{"text": "My patient"}])
         patient["active"] = True
         patient.birthDate = "1945-01-12"
         patient.name[0].text = "SomeName"
@@ -73,9 +218,7 @@ class TestLibSyncCase:
 
         assert search_set.count() == 0
 
-        self.create_resource(
-            "Patient", id="patient1", name=[{"text": "John Smith FHIRPy"}]
-        )
+        self.create_resource("Patient", id="patient1", name=[{"text": "John Smith FHIRPy"}])
 
         assert search_set.count() == 1
 
@@ -91,11 +234,38 @@ class TestLibSyncCase:
         with pytest.raises(ResourceNotFound):
             self.get_search_set("Patient").search(_id="patient").get()
 
+    def test_delete_with_params__no_match(self):
+        self.create_resource("Patient", id="patient")
+
+        _, status_code = self.client.resources("Patient").search(identifier="other").delete()
+
+        self.get_search_set("Patient").search(_id="patient").get()
+        assert status_code == 204
+
+    def test_delete_with_params__one_match(self):
+        patient = self.client.resource(
+            "Patient",
+            id="patient",
+            identifier=[{"system": "http://example.com/env", "value": "other"}, self.identifier[0]],
+        )
+        patient.save()
+
+        _, status_code = self.client.resources("Patient").search(identifier="other").delete()
+
+        with pytest.raises(ResourceNotFound):
+            self.get_search_set("Patient").search(_id="patient").get()
+        assert status_code == 200
+
+    def test_delete_with_params__multiple_matches(self):
+        self.create_resource("Patient", id="patient-1")
+        self.create_resource("Patient", id="patient-2")
+
+        with pytest.raises(MultipleResourcesFound):
+            self.client.resources("Patient").search(identifier="fhirpy").delete()
+
     def test_get_not_existing_id(self):
         with pytest.raises(ResourceNotFound):
-            self.client.resources("Patient").search(
-                _id="FHIRPypy_not_existing_id"
-            ).get()
+            self.client.resources("Patient").search(_id="FHIRPypy_not_existing_id").get()
 
     def test_get_more_than_one_resources(self):
         self.create_resource("Patient", birthDate="1901-05-25")
@@ -108,39 +278,25 @@ class TestLibSyncCase:
     def test_get_resource_by_id_is_deprecated(self):
         self.create_resource("Patient", id="patient", gender="male")
         with pytest.warns(DeprecationWarning):
-            patient = (
-                self.client.resources("Patient").search(gender="male").get(id="patient")
-            )
+            patient = self.client.resources("Patient").search(gender="male").get(id="patient")
         assert patient.id == "patient"
 
     def test_get_resource_by_search_with_id(self):
         self.create_resource("Patient", id="patient", gender="male")
-        patient = (
-            self.client.resources("Patient").search(gender="male", _id="patient").get()
-        )
+        patient = self.client.resources("Patient").search(gender="male", _id="patient").get()
         assert patient.id == "patient"
         with pytest.raises(ResourceNotFound):
-            self.client.resources("Patient").search(
-                gender="female", _id="patient"
-            ).get()
+            self.client.resources("Patient").search(gender="female", _id="patient").get()
 
     def test_get_resource_by_search(self):
-        self.create_resource(
-            "Patient", id="patient1", gender="male", birthDate="1901-05-25"
-        )
-        self.create_resource(
-            "Patient", id="patient2", gender="female", birthDate="1905-05-25"
-        )
+        self.create_resource("Patient", id="patient1", gender="male", birthDate="1901-05-25")
+        self.create_resource("Patient", id="patient2", gender="female", birthDate="1905-05-25")
         patient_1 = (
-            self.client.resources("Patient")
-            .search(gender="male", birthdate="1901-05-25")
-            .get()
+            self.client.resources("Patient").search(gender="male", birthdate="1901-05-25").get()
         )
         assert patient_1.id == "patient1"
         patient_2 = (
-            self.client.resources("Patient")
-            .search(gender="female", birthdate="1905-05-25")
-            .get()
+            self.client.resources("Patient").search(gender="female", birthdate="1905-05-25").get()
         )
         assert patient_2.id == "patient2"
 
@@ -225,25 +381,17 @@ class TestLibSyncCase:
     def test_is_valid(self):
         resource = self.client.resource
         assert resource("Patient", id="id123").is_valid() is True
-        assert (
-            resource("Patient", gender="female").is_valid(raise_exception=True) is True
-        )
+        assert resource("Patient", gender="female").is_valid(raise_exception=True) is True
 
         assert resource("Patient", gender=True).is_valid() is False
         with pytest.raises(OperationOutcome):
             resource("Patient", gender=True).is_valid(raise_exception=True)
 
-        assert (
-            resource("Patient", gender="female", custom_prop="123").is_valid() is False
-        )
+        assert resource("Patient", gender="female", custom_prop="123").is_valid() is False
         with pytest.raises(OperationOutcome):
-            resource("Patient", gender="female", custom_prop="123").is_valid(
-                raise_exception=True
-            )
+            resource("Patient", gender="female", custom_prop="123").is_valid(raise_exception=True)
 
-        assert (
-            resource("Patient", gender="female", custom_prop="123").is_valid() is False
-        )
+        assert resource("Patient", gender="female", custom_prop="123").is_valid() is False
 
     def test_get_first(self):
         self.create_resource("Patient", id="patient_first", name=[{"text": "Abc"}])
@@ -356,8 +504,30 @@ class TestLibSyncCase:
         assert patient_refreshed["name"] == [{"text": "Abc"}]
 
     def test_update(self):
-        patient = self.create_resource(
-            "Patient", id="patient_to_update", name=[{"text": "J London"}], active=False
+        patient_id = "patient_to_update"
+        patient_initial = self.create_resource(
+            "Patient", id=patient_id, name=[{"text": "J London"}], active=False
+        )
+        patient_updated = self.client.resource(
+            "Patient", id=patient_id, identifier=self.identifier, active=True
+        )
+        patient_updated.update()
+
+        patient_initial.refresh()
+
+        assert patient_initial.id == patient_updated.id
+        assert patient_updated.get("name") is None
+        assert patient_initial.get("name") is None
+        assert patient_initial["active"] is True
+
+    def test_patch(self):
+        patient_id = "patient_to_patch"
+        patient_instance_1 = self.create_resource(
+            "Patient",
+            id=patient_id,
+            name=[{"text": "J London"}],
+            active=False,
+            birthDate="1998-01-01",
         )
         new_name = [
             {
@@ -366,11 +536,14 @@ class TestLibSyncCase:
                 "given": ["Jack"],
             }
         ]
-        patient.update(active=True, name=new_name)
-        patient_refreshed = patient.to_reference().to_resource()
-        assert patient_refreshed.serialize() == patient.serialize()
-        assert patient["name"] == new_name
-        assert patient["active"] is True
+        patient_instance_2 = self.client.resource("Patient", id=patient_id, birthDate="2001-01-01")
+        patient_instance_2.patch(active=True, name=new_name)
+        patient_instance_1_refreshed = patient_instance_1.to_reference().to_resource()
+
+        assert patient_instance_1_refreshed.serialize() == patient_instance_2.serialize()
+        assert patient_instance_1_refreshed.active is True
+        assert patient_instance_1_refreshed.birthDate == "1998-01-01"
+        assert patient_instance_1_refreshed["name"] == new_name
 
     def test_update_without_id(self):
         patient = self.client.resource(
@@ -384,7 +557,9 @@ class TestLibSyncCase:
             }
         ]
         with pytest.raises(TypeError):
-            patient.update(active=True, name=new_name)
+            patient.update()
+        with pytest.raises(TypeError):
+            patient.patch(active=True, name=new_name)
         with pytest.raises(TypeError):
             patient["name"] = new_name
             patient.save(fields=["name"])
@@ -395,7 +570,7 @@ class TestLibSyncCase:
         patient = self.create_resource("Patient", id=patient_id, active=True)
 
         test_patient = self.client.reference("Patient", patient_id).to_resource()
-        test_patient.update(gender="male", name=[{"text": "Jack London"}])
+        test_patient.patch(gender="male", name=[{"text": "Jack London"}])
         assert patient.serialize() != test_patient.serialize()
 
         patient.refresh()
@@ -522,9 +697,7 @@ class TestLibSyncCase:
             },
         )
         appointment.save()
-        test_appointment = (
-            self.client.resources("Appointment").search(_id=appointment.id).get()
-        )
+        test_appointment = self.client.resources("Appointment").search(_id=appointment.id).get()
 
         assert isinstance(test_appointment.participant[0].actor, SyncFHIRReference)
         assert isinstance(test_appointment.participant[0], AttrDict)
